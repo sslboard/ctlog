@@ -50,10 +50,10 @@ The `crtsh` format only fills `name_value` and `common_name` (one hostname per e
 
 ## Limits
 
-Without an account, each search returns up to 100 hostnames and you can run 1 search per minute. When a domain has more, ctlog says so on stderr and links to the full interactive map:
+Without an account, each search returns up to 100 hostnames and you can run 1 search per minute. When a domain has more, ctlog says so on stderr and links to its subdomain map, which shows how the hostnames are spread across subdomains:
 
 ```
-100 of 12,432 hostnames. Browse the full map: https://sslboard.com/subdomain/example.com
+100 of 12,432 hostnames (free limit). See how they're spread across subdomains: https://sslboard.com/subdomain/example.com
 ```
 
 Higher limits with an API key are planned.

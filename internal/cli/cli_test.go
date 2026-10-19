@@ -62,7 +62,7 @@ func TestTextOutputAndTruncationNotice(t *testing.T) {
 	if r.stdout != "example.com\napi.example.com\n" {
 		t.Errorf("stdout = %q", r.stdout)
 	}
-	wantNotice := "2 of 12,432 hostnames. Browse the full map: https://sslboard.com/subdomain/example.com\n"
+	wantNotice := "2 of 12,432 hostnames (free limit). See how they're spread across subdomains: https://sslboard.com/subdomain/example.com\n"
 	if r.stderr != wantNotice {
 		t.Errorf("stderr = %q, want %q", r.stderr, wantNotice)
 	}
@@ -129,7 +129,7 @@ func TestLowerBoundNotice(t *testing.T) {
 	body := `{"domain":"example.com","hostnames":["a.example.com"],"returned":100,"total":500000,"total_is_lower_bound":true,"truncated":true,"map_url":"https://sslboard.com/subdomain/example.com"}`
 	srv, _, _ := fakeAPI(t, 200, body, nil)
 	r := run(t, srv.URL, "example.com")
-	if !strings.HasPrefix(r.stderr, "100 of 500,000+ hostnames.") {
+	if !strings.HasPrefix(r.stderr, "100 of 500,000+ hostnames (free limit).") {
 		t.Errorf("stderr = %q", r.stderr)
 	}
 }

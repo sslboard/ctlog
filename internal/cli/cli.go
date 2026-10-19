@@ -55,7 +55,8 @@ Hostnames go to stdout and notices to stderr, so pipes and files only get hostna
   ctlog example.com > hostnames.txt
 
 Without an account, ctlog returns up to 100 hostnames per search and allows
-1 search per minute. Browse the full map at https://sslboard.com/subdomain/
+1 search per minute. See how a domain's hostnames are spread across its
+subdomains at https://sslboard.com/subdomain/
 
 Environment:
   CTLOG_API_URL   API base URL (default https://sslboard.com)
@@ -288,9 +289,9 @@ func writeNotice(stderr io.Writer, domain string, res *api.Result) {
 	if res.TotalIsLowerBound {
 		total += "+"
 	}
-	msg := fmt.Sprintf("%s of %s hostnames.", formatCount(int64(returned)), total)
+	msg := fmt.Sprintf("%s of %s hostnames (free limit).", formatCount(int64(returned)), total)
 	if res.MapURL != "" {
-		msg += " Browse the full map: " + res.MapURL
+		msg += " See how they're spread across subdomains: " + res.MapURL
 	}
 	fmt.Fprintln(stderr, msg)
 }
