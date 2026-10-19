@@ -1,5 +1,9 @@
 # ctlog
 
+[![Release](https://img.shields.io/github/v/release/sslboard/ctlog)](https://github.com/sslboard/ctlog/releases/latest)
+[![Coverage](https://dev.gone-coding.com/api/project_badges/measure?project=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29&metric=coverage&token=sqb_f606339d871ca65319eea93cd370fa9833e6bcb3)](https://dev.gone-coding.com/dashboard?id=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29)
+[![Quality gate status](https://dev.gone-coding.com/api/project_badges/measure?project=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29&metric=alert_status&token=sqb_f606339d871ca65319eea93cd370fa9833e6bcb3)](https://dev.gone-coding.com/dashboard?id=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29)
+
 List every hostname seen in Certificate Transparency logs for a domain, from the command line. Built by [SSLBoard](https://sslboard.com) as a fast, reliable alternative to crt.sh for subdomain recon.
 
 ```bash
