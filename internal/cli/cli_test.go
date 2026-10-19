@@ -125,6 +125,61 @@ func TestCrtshOutputShape(t *testing.T) {
 	}
 }
 
+// idnBody mixes the Unicode and punycode forms the API may return.
+const idnBody = `{"query":"xn--mnchen-3ya.de","domain":"xn--mnchen-3ya.de","hostnames":["münchen.de","*.xn--mnchen-3ya.de","www.münchen.de"],"returned":3,"total":3,"total_is_lower_bound":false,"truncated":false,"limit":100,"map_url":"https://sslboard.com/subdomain/xn--mnchen-3ya.de"}`
+
+func TestUnicodeQuerySentAsPunycode(t *testing.T) {
+	srv, last, _ := fakeAPI(t, 200, idnBody, nil)
+	r := run(t, srv.URL, "%.München.de")
+	if r.code != ExitOK {
+		t.Fatalf("code = %d, stderr = %q", r.code, r.stderr)
+	}
+	if q := last.Load().URL.Query().Get("q"); q != "xn--mnchen-3ya.de" {
+		t.Errorf("q = %q", q)
+	}
+}
+
+func TestIDNOutputIsPunycodeByDefault(t *testing.T) {
+	srv, _, _ := fakeAPI(t, 200, idnBody, nil)
+
+	r := run(t, srv.URL, "münchen.de")
+	if want := "xn--mnchen-3ya.de\n*.xn--mnchen-3ya.de\nwww.xn--mnchen-3ya.de\n"; r.stdout != want {
+		t.Errorf("text stdout = %q, want %q", r.stdout, want)
+	}
+
+	r = run(t, srv.URL, "münchen.de", "-o", "crtsh")
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(r.stdout), &entries); err != nil {
+		t.Fatalf("crtsh stdout is not JSON: %v", err)
+	}
+	if entries[2]["name_value"] != "www.xn--mnchen-3ya.de" || entries[2]["common_name"] != "www.xn--mnchen-3ya.de" {
+		t.Errorf("crtsh entries = %v", entries)
+	}
+
+	r = run(t, srv.URL, "münchen.de", "-o", "json")
+	var got struct {
+		Hostnames []string `json:"hostnames"`
+		MapURL    string   `json:"map_url"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
+		t.Fatalf("json stdout is not JSON: %v", err)
+	}
+	if strings.Join(got.Hostnames, " ") != "xn--mnchen-3ya.de *.xn--mnchen-3ya.de www.xn--mnchen-3ya.de" || got.MapURL == "" {
+		t.Errorf("json stdout = %s", r.stdout)
+	}
+	if !strings.HasPrefix(r.stdout, "{\n  \"query\"") {
+		t.Errorf("json member order changed: %s", r.stdout)
+	}
+}
+
+func TestUnicodeFlag(t *testing.T) {
+	srv, _, _ := fakeAPI(t, 200, idnBody, nil)
+	r := run(t, srv.URL, "xn--mnchen-3ya.de", "--unicode")
+	if want := "münchen.de\n*.münchen.de\nwww.münchen.de\n"; r.stdout != want {
+		t.Errorf("stdout = %q, want %q", r.stdout, want)
+	}
+}
+
 func TestLowerBoundNotice(t *testing.T) {
 	body := `{"domain":"example.com","hostnames":["a.example.com"],"returned":100,"total":500000,"total_is_lower_bound":true,"truncated":true,"map_url":"https://sslboard.com/subdomain/example.com"}`
 	srv, _, _ := fakeAPI(t, 200, body, nil)

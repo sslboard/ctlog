@@ -41,13 +41,17 @@ Usage:
   ctlog version
 
 <domain> can be example.com, %.example.com or *.example.com. All three mean
-"this name and everything below it".
+"this name and everything below it". Internationalized names can be typed in
+either form: bücher.example or xn--bcher-kva.example.
 
 Flags:
   -o, --output FORMAT     text (default), json or crtsh
       --no-wildcards      exclude wildcard names (*.example.com), which are
                           listed by default
       --no-apex           exclude the queried name itself
+      --unicode           print internationalized names as Unicode
+                          (bücher.example) instead of punycode
+                          (xn--bcher-kva.example), the default
   -q, --quiet             suppress notices on stderr
   -h, --help              show this help
 
@@ -69,6 +73,7 @@ type options struct {
 	output      string
 	noWildcards bool
 	noApex      bool
+	unicode     bool
 	quiet       bool
 	help        bool
 	version     bool
@@ -149,6 +154,14 @@ func Run(args []string, stdout, stderr io.Writer, getenv func(string) string, ve
 		return reportError(stderr, err)
 	}
 
+	convert := query.ASCII
+	if opts.unicode {
+		convert = query.Unicode
+	}
+	for i, h := range res.Hostnames {
+		res.Hostnames[i] = convert(h)
+	}
+
 	if err := writeResult(stdout, opts.output, res); err != nil {
 		fmt.Fprintf(stderr, "ctlog: writing output: %v\n", err)
 		return ExitAPI
@@ -169,6 +182,7 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	fs.StringVar(&opts.output, "output", opts.output, "")
 	fs.BoolVar(&opts.noWildcards, "no-wildcards", false, "")
 	fs.BoolVar(&opts.noApex, "no-apex", false, "")
+	fs.BoolVar(&opts.unicode, "unicode", false, "")
 	fs.BoolVar(&opts.quiet, "q", false, "")
 	fs.BoolVar(&opts.quiet, "quiet", false, "")
 	fs.BoolVar(&opts.help, "help", false, "")
@@ -245,8 +259,12 @@ func writeResult(w io.Writer, format string, res *api.Result) error {
 	bw := bufio.NewWriter(w)
 	switch format {
 	case "json":
+		raw, err := replaceHostnames(res.Raw, res.Hostnames)
+		if err != nil {
+			return err
+		}
 		var buf bytes.Buffer
-		if err := json.Indent(&buf, res.Raw, "", "  "); err != nil {
+		if err := json.Indent(&buf, raw, "", "  "); err != nil {
 			return err
 		}
 		buf.WriteByte('\n')
@@ -271,6 +289,42 @@ func writeResult(w io.Writer, format string, res *api.Result) error {
 		}
 	}
 	return bw.Flush()
+}
+
+// replaceHostnames returns the JSON object raw with its "hostnames" member
+// set to hostnames. Other members, and the member order, are kept as received.
+func replaceHostnames(raw []byte, hostnames []string) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, errors.New("unexpected response from API (not a JSON object)")
+	}
+	var out bytes.Buffer
+	out.WriteByte('{')
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, _ := tok.(string)
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, err
+		}
+		if key == "hostnames" {
+			if value, err = json.Marshal(hostnames); err != nil {
+				return nil, err
+			}
+		}
+		if out.Len() > 1 {
+			out.WriteByte(',')
+		}
+		k, _ := json.Marshal(key)
+		out.Write(k)
+		out.WriteByte(':')
+		out.Write(value)
+	}
+	out.WriteByte('}')
+	return out.Bytes(), nil
 }
 
 func writeNotice(stderr io.Writer, domain string, res *api.Result) {

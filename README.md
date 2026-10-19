@@ -23,6 +23,7 @@ ctlog example.com -o json              # SSLBoard JSON response
 ctlog example.com -o crtsh             # crt.sh-shaped JSON for drop-in scripts
 ctlog example.com --no-wildcards       # drop *.example.com style entries
 ctlog example.com --no-apex            # exclude the queried name itself
+ctlog bücher.example --unicode         # print IDNs as Unicode instead of punycode
 ctlog version
 ```
 
@@ -46,6 +47,7 @@ The `crtsh` format only fills `name_value` and `common_name` (one hostname per e
 
 - Hostnames from all currently valid certificates in the public CT logs, kept for 15 days after the certificate expires. There is no history of long-expired certificates.
 - Wildcard names such as `*.example.com` are listed as they appear in certificates. Many sites have no certificate for `www.example.com` itself and rely on a wildcard instead. Use `--no-wildcards` to leave them out.
+- Internationalized names are printed in punycode (`xn--bcher-kva.example`), the form certificates carry, so they work with DNS tools and match crt.sh output. Use `--unicode` to print `bücher.example` instead. You can type the domain in either form.
 - Results are ordered by reversed labels (`com.example.api` sorts before `com.example.www`), so whole subtrees stay together.
 
 ## Limits

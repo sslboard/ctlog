@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // MaxLength is the longest DNS name the API accepts.
@@ -23,8 +25,14 @@ var commonPublicSuffixes = map[string]bool{
 	"com.tr": true, "com.tw": true, "com.sg": true, "com.hk": true,
 }
 
+// idnDots are the full stops IDNA treats as label separators, as typed by
+// Chinese and Japanese input methods.
+var idnDots = strings.NewReplacer("\u3002", ".", "\uff0e", ".", "\uff61", ".")
+
 // Normalize turns user input such as "%.Example.com", "*.example.com" or
 // "https://example.com/" into a bare lowercase domain ("example.com").
+// Internationalized names such as "bücher.example" become punycode
+// ("xn--bcher-kva.example").
 func Normalize(input string) (string, error) {
 	q := strings.ToLower(strings.TrimSpace(input))
 	if q == "" {
@@ -39,6 +47,8 @@ func Normalize(input string) (string, error) {
 		q = host
 	}
 
+	q = idnDots.Replace(q)
+
 	// crt.sh habits: %.example.com and *.example.com mean "everything below".
 	q = strings.TrimPrefix(q, "%.")
 	q = strings.TrimPrefix(q, "*.")
@@ -50,11 +60,22 @@ func Normalize(input string) (string, error) {
 	if q == "" {
 		return "", errors.New("missing domain")
 	}
+
+	labels := strings.Split(q, ".")
+	for i, label := range labels {
+		if isASCII(label) {
+			continue
+		}
+		ascii, err := idna.Lookup.ToASCII(label)
+		if err != nil {
+			return "", fmt.Errorf("invalid domain %q: %q is not a valid internationalized label", input, label)
+		}
+		labels[i] = ascii
+	}
+	q = strings.Join(labels, ".")
 	if len(q) > MaxLength {
 		return "", fmt.Errorf("invalid domain: longer than %d characters", MaxLength)
 	}
-
-	labels := strings.Split(q, ".")
 	for _, label := range labels {
 		if err := checkLabel(label); err != nil {
 			return "", fmt.Errorf("invalid domain %q: %w", input, err)
@@ -76,8 +97,6 @@ func checkLabel(label string) error {
 	for _, r := range label {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
-		case r > 127:
-			return errors.New("non-ASCII characters, use the punycode (xn--) form")
 		default:
 			return fmt.Errorf("unexpected character %q", r)
 		}
