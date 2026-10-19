@@ -16,3 +16,6 @@ go.work.sum
 
 # Local env
 .env
+
+# GoReleaser output
+/dist/
