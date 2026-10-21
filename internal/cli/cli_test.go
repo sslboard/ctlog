@@ -30,7 +30,7 @@ func run(t *testing.T, apiURL string, args ...string) result {
 		}
 		return ""
 	}
-	code := Run(args, &stdout, &stderr, env, "v0.0.0-test")
+	code := Run(args, nil, &stdout, &stderr, env, "v0.0.0-test")
 	return result{code, stdout.String(), stderr.String()}
 }
 

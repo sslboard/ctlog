@@ -2,10 +2,7 @@
 package cli
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,7 +16,7 @@ import (
 	"time"
 
 	"github.com/sslboard/ctlog/internal/api"
-	"github.com/sslboard/ctlog/internal/query"
+	"github.com/sslboard/ctlog/internal/config"
 )
 
 // Exit codes.
@@ -28,6 +25,8 @@ const (
 	ExitUsage       = 1
 	ExitAPI         = 2
 	ExitRateLimited = 3
+	// ExitAuth covers a rejected API key and a denied or expired login.
+	ExitAuth = 4
 )
 
 // retryDelay is the backoff before retrying a 502/503. Tests shorten it.
@@ -38,6 +37,10 @@ const usage = `ctlog: list hostnames seen in Certificate Transparency logs, by S
 Usage:
   ctlog [flags] <domain>
   ctlog find [flags] <domain>
+  ctlog -f domains.txt [flags]
+  ctlog login [--key KEY] [--no-browser]
+  ctlog logout
+  ctlog status
   ctlog version
 
 <domain> can be example.com, %.example.com or *.example.com. All three mean
@@ -46,6 +49,9 @@ either form: bücher.example or xn--bcher-kva.example.
 
 Flags:
   -o, --output FORMAT     text (default), json or crtsh
+      --all               fetch every page (needs the hostname API plan)
+  -f, --file FILE         read domains from FILE, one per line ("-" for
+                          stdin); results are merged and deduplicated
       --no-wildcards      exclude wildcard names (*.example.com), which are
                           listed by default
       --no-apex           exclude the queried name itself
@@ -55,18 +61,26 @@ Flags:
   -q, --quiet             suppress notices on stderr
   -h, --help              show this help
 
+Login flags:
+      --key KEY           save an existing API key instead of signing in
+                          in the browser ("-" reads it from stdin)
+      --no-browser        print the login link without opening a browser
+
 Hostnames go to stdout and notices to stderr, so pipes and files only get hostnames:
   ctlog example.com > hostnames.txt
 
 Without an account, ctlog returns up to 100 hostnames per search and allows
-1 search per minute. See how a domain's hostnames are spread across its
-subdomains at https://sslboard.com/subdomain/
+1 search per minute. The hostname API plan returns every hostname, in pages of
+up to 10,000 (use --all), at 60 requests per minute; --all and -f wait when
+they reach that limit. Run 'ctlog login' to
+sign in, then subscribe at https://sslboard.com/account/api/
 
 Environment:
-  CTLOG_API_URL   API base URL (default https://sslboard.com)
+  SSLBOARD_API_KEY   API key, used instead of the one saved by ctlog login
+  CTLOG_API_URL      API base URL (default https://sslboard.com)
 
 Exit codes: 0 ok, 1 usage or invalid domain, 2 API or network error,
-3 rate limited.
+3 rate limited, 4 API key rejected or login not approved.
 `
 
 type options struct {
@@ -77,12 +91,25 @@ type options struct {
 	quiet       bool
 	help        bool
 	version     bool
+	all         bool
+	file        string
+	key         string
+	noBrowser   bool
+}
+
+// env bundles what a command needs besides its options.
+type env struct {
+	stdin          io.Reader
+	stdout, stderr io.Writer
+	getenv         func(string) string
+	client         *api.Client
+	keySource      config.Source
 }
 
 // Run executes ctlog with args (without the program name) and returns the
 // process exit code.
-func Run(args []string, stdout, stderr io.Writer, getenv func(string) string, version string) int {
-	opts, positional, err := parseArgs(args, stderr)
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, version string) int {
+	opts, positional, err := parseArgs(args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			io.WriteString(stdout, usage)
@@ -99,28 +126,34 @@ func Run(args []string, stdout, stderr io.Writer, getenv func(string) string, ve
 		return ExitOK
 	}
 
+	command := ""
 	if len(positional) > 0 {
 		switch positional[0] {
-		case "version":
-			if len(positional) > 1 {
-				return usageError(stderr, "version takes no arguments")
-			}
-			printVersion(stdout, version)
-			return ExitOK
-		case "help":
-			io.WriteString(stdout, usage)
-			return ExitOK
+		case "version", "help", "login", "logout", "status":
+			command = positional[0]
+			positional = positional[1:]
 		case "find":
 			positional = positional[1:]
 		}
 	}
 
-	switch len(positional) {
-	case 0:
-		return usageError(stderr, "missing domain")
-	case 1:
-	default:
-		return usageError(stderr, "one domain per invocation (got "+strconv.Itoa(len(positional))+")")
+	switch command {
+	case "version":
+		if len(positional) > 0 {
+			return usageError(stderr, "version takes no arguments")
+		}
+		printVersion(stdout, version)
+		return ExitOK
+	case "help":
+		io.WriteString(stdout, usage)
+		return ExitOK
+	case "login", "logout", "status":
+		if len(positional) > 0 {
+			return usageError(stderr, command+" takes no arguments")
+		}
+	}
+	if command != "login" && (opts.key != "" || opts.noBrowser) {
+		return usageError(stderr, "--key and --no-browser only apply to ctlog login")
 	}
 
 	switch opts.output {
@@ -129,52 +162,50 @@ func Run(args []string, stdout, stderr io.Writer, getenv func(string) string, ve
 		return usageError(stderr, fmt.Sprintf("unknown output format %q (want text, json or crtsh)", opts.output))
 	}
 
-	domain, err := query.Normalize(positional[0])
-	if err != nil {
-		fmt.Fprintf(stderr, "ctlog: %v\n", err)
-		return ExitUsage
-	}
-
 	baseURL := strings.TrimSpace(getenv("CTLOG_API_URL"))
 	if baseURL == "" {
 		baseURL = api.DefaultBaseURL
 	}
-	client := &api.Client{
-		BaseURL:    baseURL,
-		UserAgent:  userAgent(version),
-		HTTPClient: &http.Client{Timeout: api.DefaultTimeout},
-		RetryDelay: retryDelay,
+	e := &env{
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
+		getenv: getenv,
+		client: &api.Client{
+			BaseURL:    baseURL,
+			UserAgent:  userAgent(version),
+			HTTPClient: &http.Client{Timeout: api.DefaultTimeout},
+			RetryDelay: retryDelay,
+		},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	res, err := client.Lookup(ctx, domain, api.Options{IncludeApex: !opts.noApex, ExcludeWildcards: opts.noWildcards})
+	if command == "login" {
+		return runLogin(ctx, e, opts)
+	}
+	if command == "logout" {
+		return runLogout(e)
+	}
+
+	key, source, err := config.ResolveKey(getenv)
 	if err != nil {
-		return reportError(stderr, err)
+		fmt.Fprintf(stderr, "ctlog: reading saved login: %v\n", err)
+		return ExitUsage
 	}
+	e.client.APIKey = key
+	e.keySource = source
 
-	convert := query.ASCII
-	if opts.unicode {
-		convert = query.Unicode
+	if command == "status" {
+		return runStatus(ctx, e, opts)
 	}
-	for i, h := range res.Hostnames {
-		res.Hostnames[i] = convert(h)
-	}
-
-	if err := writeResult(stdout, opts.output, res); err != nil {
-		fmt.Fprintf(stderr, "ctlog: writing output: %v\n", err)
-		return ExitAPI
-	}
-	if !opts.quiet {
-		writeNotice(stderr, domain, res)
-	}
-	return ExitOK
+	return runLookup(ctx, e, opts, positional)
 }
 
 // parseArgs accepts flags before and after positional arguments, so both
 // "ctlog -o json example.com" and "ctlog example.com -o json" work.
-func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
+func parseArgs(args []string) (options, []string, error) {
 	opts := options{output: "text"}
 	fs := flag.NewFlagSet("ctlog", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -187,6 +218,11 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	fs.BoolVar(&opts.quiet, "quiet", false, "")
 	fs.BoolVar(&opts.help, "help", false, "")
 	fs.BoolVar(&opts.version, "version", false, "")
+	fs.BoolVar(&opts.all, "all", false, "")
+	fs.StringVar(&opts.file, "f", "", "")
+	fs.StringVar(&opts.file, "file", "", "")
+	fs.StringVar(&opts.key, "key", "", "")
+	fs.BoolVar(&opts.noBrowser, "no-browser", false, "")
 
 	var positional []string
 	for {
@@ -213,7 +249,11 @@ func usageError(stderr io.Writer, msg string) int {
 	return ExitUsage
 }
 
-func reportError(stderr io.Writer, err error) int {
+func (e *env) accountURL() string {
+	return strings.TrimRight(e.client.BaseURL, "/") + "/account/api/"
+}
+
+func (e *env) reportError(err error) int {
 	var apiErr *api.Error
 	if errors.As(err, &apiErr) {
 		switch {
@@ -222,132 +262,40 @@ func reportError(stderr io.Writer, err error) int {
 			if apiErr.RetryAfter > 0 {
 				retry = fmt.Sprintf("Retry in %ds.", int(apiErr.RetryAfter.Round(time.Second).Seconds()))
 			}
-			fmt.Fprintf(stderr, "Rate limited (1 search/minute without an account). %s\n", retry)
+			if e.client.APIKey != "" && apiErr.Message != "" {
+				fmt.Fprintf(e.stderr, "%s. %s\n", strings.TrimSuffix(apiErr.Message, "."), retry)
+			} else {
+				fmt.Fprintf(e.stderr, "Rate limited (1 search/minute without an account). %s\n", retry)
+			}
 			return ExitRateLimited
+		case apiErr.Status == http.StatusUnauthorized:
+			hint := "Run 'ctlog login' to sign in again."
+			if e.keySource == config.SourceEnv {
+				hint = "Check the key in " + config.EnvAPIKey + "."
+			}
+			fmt.Fprintf(e.stderr, "ctlog: API key rejected (revoked or invalid). %s\n", hint)
+			return ExitAuth
+		case apiErr.Status == http.StatusPaymentRequired:
+			fmt.Fprintf(e.stderr, "ctlog: %v\n", apiErr)
+			return ExitAuth
 		case apiErr.Status == http.StatusBadRequest || apiErr.Status == http.StatusUnprocessableEntity:
-			fmt.Fprintf(stderr, "ctlog: %v\n", apiErr)
+			fmt.Fprintf(e.stderr, "ctlog: %v\n", apiErr)
 			return ExitUsage
 		default:
 			if apiErr.Message != "" {
-				fmt.Fprintf(stderr, "ctlog: API error (HTTP %d): %s\n", apiErr.Status, apiErr.Message)
+				fmt.Fprintf(e.stderr, "ctlog: API error (HTTP %d): %s\n", apiErr.Status, apiErr.Message)
 			} else {
-				fmt.Fprintf(stderr, "ctlog: API error (HTTP %d)\n", apiErr.Status)
+				fmt.Fprintf(e.stderr, "ctlog: API error (HTTP %d)\n", apiErr.Status)
 			}
 			return ExitAPI
 		}
 	}
 	if errors.Is(err, context.Canceled) {
-		fmt.Fprintln(stderr, "ctlog: interrupted")
+		fmt.Fprintln(e.stderr, "ctlog: interrupted")
 		return ExitAPI
 	}
-	fmt.Fprintf(stderr, "ctlog: %v\n", err)
+	fmt.Fprintf(e.stderr, "ctlog: %v\n", err)
 	return ExitAPI
-}
-
-// crtshEntry mirrors the crt.sh JSON shape. Only name_value and common_name
-// are populated: SSLBoard serves hostnames, not certificates.
-type crtshEntry struct {
-	NameValue  string  `json:"name_value"`
-	CommonName string  `json:"common_name"`
-	IssuerName *string `json:"issuer_name"`
-	NotBefore  *string `json:"not_before"`
-	NotAfter   *string `json:"not_after"`
-	ID         *int64  `json:"id"`
-}
-
-func writeResult(w io.Writer, format string, res *api.Result) error {
-	bw := bufio.NewWriter(w)
-	switch format {
-	case "json":
-		raw, err := replaceHostnames(res.Raw, res.Hostnames)
-		if err != nil {
-			return err
-		}
-		var buf bytes.Buffer
-		if err := json.Indent(&buf, raw, "", "  "); err != nil {
-			return err
-		}
-		buf.WriteByte('\n')
-		if _, err := bw.Write(buf.Bytes()); err != nil {
-			return err
-		}
-	case "crtsh":
-		entries := make([]crtshEntry, 0, len(res.Hostnames))
-		for _, h := range res.Hostnames {
-			entries = append(entries, crtshEntry{NameValue: h, CommonName: h})
-		}
-		enc := json.NewEncoder(bw)
-		enc.SetEscapeHTML(false)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(entries); err != nil {
-			return err
-		}
-	default:
-		for _, h := range res.Hostnames {
-			bw.WriteString(h)
-			bw.WriteByte('\n')
-		}
-	}
-	return bw.Flush()
-}
-
-// replaceHostnames returns the JSON object raw with its "hostnames" member
-// set to hostnames. Other members, and the member order, are kept as received.
-func replaceHostnames(raw []byte, hostnames []string) ([]byte, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return nil, errors.New("unexpected response from API (not a JSON object)")
-	}
-	var out bytes.Buffer
-	out.WriteByte('{')
-	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil, err
-		}
-		key, _ := tok.(string)
-		var value json.RawMessage
-		if err := dec.Decode(&value); err != nil {
-			return nil, err
-		}
-		if key == "hostnames" {
-			if value, err = json.Marshal(hostnames); err != nil {
-				return nil, err
-			}
-		}
-		if out.Len() > 1 {
-			out.WriteByte(',')
-		}
-		k, _ := json.Marshal(key)
-		out.Write(k)
-		out.WriteByte(':')
-		out.Write(value)
-	}
-	out.WriteByte('}')
-	return out.Bytes(), nil
-}
-
-func writeNotice(stderr io.Writer, domain string, res *api.Result) {
-	returned := res.Returned
-	if returned == 0 {
-		returned = len(res.Hostnames)
-	}
-	if returned == 0 && !res.Truncated {
-		fmt.Fprintf(stderr, "No hostnames found for %s.\n", domain)
-		return
-	}
-	if !res.Truncated {
-		return
-	}
-	total := formatCount(res.Total)
-	if res.TotalIsLowerBound {
-		total += "+"
-	}
-	msg := fmt.Sprintf("%s of %s hostnames (free limit).", formatCount(int64(returned)), total)
-	if res.MapURL != "" {
-		msg += " See how they're spread across subdomains: " + res.MapURL
-	}
-	fmt.Fprintln(stderr, msg)
 }
 
 // formatCount renders 12432 as "12,432".

@@ -13,7 +13,7 @@ import (
 var version = ""
 
 func main() {
-	os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv, resolveVersion()))
+	os.Exit(cli.Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv, resolveVersion()))
 }
 
 // resolveVersion falls back to the module version for "go install ...@vX.Y.Z"

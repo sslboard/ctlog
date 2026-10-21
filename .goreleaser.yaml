@@ -37,3 +37,29 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+# brew install sslboard/tap/ctlog. Needs the sslboard/homebrew-tap repository
+# and a HOMEBREW_TAP_GITHUB_TOKEN secret with write access to it; releases
+# skip the cask until the secret exists.
+homebrew_casks:
+  - name: ctlog
+    binaries: [ctlog]
+    repository:
+      owner: sslboard
+      name: homebrew-tap
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
+    homepage: https://sslboard.com/docs/ctlog/
+    description: List hostnames from Certificate Transparency logs
+    license: MIT
+    commit_author:
+      name: sslboard-bot
+      email: contact@sslboard.com
+    hooks:
+      post:
+        # The binaries are not notarized; drop the quarantine flag so macOS
+        # runs them.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ctlog"]
+          end
