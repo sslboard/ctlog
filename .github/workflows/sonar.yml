@@ -1,9 +1,10 @@
 name: SonarQube
 
+# Release tags only, to keep builds down. The server's edition has no branch
+# analysis, so a tag scan still updates the main project and its badges.
 on:
   push:
-    branches:
-      - main
+    tags: ["v*"]
   workflow_dispatch: {}
 
 permissions:

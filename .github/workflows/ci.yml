@@ -1,9 +1,12 @@
 name: ci
 
+# Release tags only, to keep builds down. Run gofmt, go vet and go test -race
+# locally before pushing to main.
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
