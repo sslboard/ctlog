@@ -39,15 +39,16 @@ changelog:
       - "^test:"
 
 # brew install sslboard/tap/ctlog. Needs the sslboard/homebrew-tap repository
-# and a HOMEBREW_TAP_GITHUB_TOKEN secret with write access to it; releases
-# skip the cask until the secret exists.
+# and a HOMEBREW_TAP_GITHUB_TOKEN secret with write access to it. GoReleaser
+# only accepts the token as a bare {{ .Env.NAME }} template, so the upload is
+# skipped when the variable is empty rather than when it is missing.
 homebrew_casks:
   - name: ctlog
     binaries: [ctlog]
     repository:
       owner: sslboard
       name: homebrew-tap
-      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
     homepage: https://sslboard.com/docs/ctlog/
     description: List hostnames from Certificate Transparency logs
