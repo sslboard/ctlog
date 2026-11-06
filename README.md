@@ -4,7 +4,7 @@
 [![Coverage](https://dev.gone-coding.com/api/project_badges/measure?project=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29&metric=coverage&token=sqb_f606339d871ca65319eea93cd370fa9833e6bcb3)](https://dev.gone-coding.com/dashboard?id=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29)
 [![Quality gate status](https://dev.gone-coding.com/api/project_badges/measure?project=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29&metric=alert_status&token=sqb_f606339d871ca65319eea93cd370fa9833e6bcb3)](https://dev.gone-coding.com/dashboard?id=sslboard_ctlog_b55a9bb3-ae07-48e1-aa98-9fe0e254bb29)
 
-List every hostname seen in Certificate Transparency logs for a domain, from the command line. Built by [SSLBoard](https://sslboard.com) as a fast, reliable alternative to crt.sh for subdomain recon.
+List hostnames and recent certificate details for a domain from the command line. Built by [SSLBoard](https://sslboard.com) as a fast, reliable alternative to crt.sh for subdomain recon.
 
 ```bash
 ctlog example.com > hostnames.txt
@@ -39,13 +39,15 @@ ctlog -f domains.txt                   # one domain per line, results merged and
 ctlog login                            # sign in through the browser
 ctlog login --key sslb_live_...        # save an existing key (--key - reads stdin)
 ctlog status                           # account, plan, limits and usage
+ctlog certificates example.com       # recent certificate details as JSON
+ctlog certificates example.com --all # every recent certificate page (API plan)
 ctlog logout
 ctlog version
 ```
 
 `ctlog find <domain>` is an alias of `ctlog <domain>`. `-f -` reads the domain list from stdin; blank lines and `#` comments are skipped.
 
-Hostnames go to stdout and notices go to stderr, so pipes only ever see hostnames. Use `-q` to silence notices.
+For hostname text output, hostnames go to stdout and notices go to stderr, so pipes only ever see hostnames. Use `-q` to silence notices.
 
 ### Migrating from crt.sh
 
@@ -57,7 +59,7 @@ curl -s 'https://crt.sh/?q=%.example.com&output=json' | jq -r '.[].name_value' |
 ctlog example.com -o crtsh | jq -r '.[].name_value'
 ```
 
-The `crtsh` format only fills `name_value` and `common_name` (one hostname per entry). Issuer, validity dates and certificate IDs are `null`: SSLBoard serves hostnames, not certificates.
+The `crtsh` format only fills `name_value` and `common_name` (one hostname per entry). Issuer, validity dates and certificate IDs are `null`: the hostname listing does not carry certificate records. Use `ctlog certificates example.com` for recent certificate details.
 
 ## What the data is
 
@@ -108,6 +110,33 @@ CTLOG_API_URL=http://localhost:8787 ./bin/ctlog example.com
 ```
 
 Releases are cut by pushing a `v*` tag; GitHub Actions runs GoReleaser. The Homebrew cask (`brew install sslboard/tap/ctlog`) is published to `sslboard/homebrew-tap` once that repository and the `HOMEBREW_TAP_GITHUB_TOKEN` secret exist; until then releases skip it.
+
+## Recent certificates
+
+Use `ctlog certificates example.com` to list recent certificates naming a domain
+or any name below it. The command returns JSON with the certificate details
+available in the index, including issuer, serial, validity dates and SANs.
+Use `--exact` to match only the queried name and `--all` to follow every page
+with an active API plan. Certificate IDs are deduplicated across those pages.
+
+This is a recent ingestion window, not a full certificate history. Retention is
+being expanded to three days: about one day is available initially, and the
+window fills as new certificates arrive over the following two days. Results
+are ordered by the name index, not issuance time. Only precertificates ingested
+by SSLBoard are stored, and retention or storage pressure can limit coverage.
+Certificate commands always return JSON, including when no output flag is supplied.
+With `--all`, paid-plan rate limits are waited out before retrying.
+
+The public endpoint is `GET /api/v1/certificates?q=example.com`. It accepts
+`include_subdomains=true|false` (default true), `limit` (1 to 1,000), and the
+opaque `after` cursor from a previous response's `next`. Free requests return
+up to 100 certificates without pagination. The existing API plan allows pages
+of up to 1,000 and cursor pagination. Authentication and request rate limits are
+shared with hostname searches. Responses are JSON and are not cached.
+
+A page can be empty with a nonempty cursor. Keep paging until `next` is null.
+A certificate can occur on multiple pages through different SANs; API consumers
+should deduplicate by `certificate_id`. The CLI does this automatically.
 
 ## License
 

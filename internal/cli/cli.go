@@ -37,6 +37,7 @@ const usage = `ctlog: list hostnames seen in Certificate Transparency logs, by S
 Usage:
   ctlog [flags] <domain>
   ctlog find [flags] <domain>
+  ctlog certificates <domain> [-o json] [--all] [--exact]
   ctlog -f domains.txt [flags]
   ctlog login [--key KEY] [--no-browser]
   ctlog logout
@@ -52,6 +53,7 @@ Flags:
       --all               fetch every page (needs the hostname API plan)
   -f, --file FILE         read domains from FILE, one per line ("-" for
                           stdin); results are merged and deduplicated
+      --exact             match only the queried name (certificates only)
       --no-wildcards      exclude wildcard names (*.example.com), which are
                           listed by default
       --no-apex           exclude the queried name itself
@@ -95,6 +97,7 @@ type options struct {
 	file        string
 	key         string
 	noBrowser   bool
+	exact       bool
 }
 
 // env bundles what a command needs besides its options.
@@ -129,7 +132,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 	command := ""
 	if len(positional) > 0 {
 		switch positional[0] {
-		case "version", "help", "login", "logout", "status":
+		case "version", "help", "login", "logout", "status", "certificates":
 			command = positional[0]
 			positional = positional[1:]
 		case "find":
@@ -151,6 +154,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		if len(positional) > 0 {
 			return usageError(stderr, command+" takes no arguments")
 		}
+	}
+	if opts.exact && command != "certificates" {
+		return usageError(stderr, "--exact only applies to ctlog certificates")
 	}
 	if command != "login" && (opts.key != "" || opts.noBrowser) {
 		return usageError(stderr, "--key and --no-browser only apply to ctlog login")
@@ -200,6 +206,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 	if command == "status" {
 		return runStatus(ctx, e, opts)
 	}
+	if command == "certificates" {
+		return runCertificates(ctx, e, opts, positional)
+	}
 	return runLookup(ctx, e, opts, positional)
 }
 
@@ -222,6 +231,7 @@ func parseArgs(args []string) (options, []string, error) {
 	fs.StringVar(&opts.file, "f", "", "")
 	fs.StringVar(&opts.file, "file", "", "")
 	fs.StringVar(&opts.key, "key", "", "")
+	fs.BoolVar(&opts.exact, "exact", false, "")
 	fs.BoolVar(&opts.noBrowser, "no-browser", false, "")
 
 	var positional []string
