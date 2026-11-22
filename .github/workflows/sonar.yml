@@ -23,7 +23,27 @@ jobs:
           go-version-file: go.mod
       - name: Test with coverage
         run: go test -coverprofile=coverage.out ./...
+      # SonarQube sits behind Cloudflare Access. The scanner cannot send the
+      # service token headers itself, so it talks to a local proxy that adds them.
+      - name: Start Cloudflare Access proxy for SonarQube
+        env:
+          UPSTREAM_URL: https://dev.gone-coding.com
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          nohup node .github/scripts/cf-access-proxy.mjs > "$RUNNER_TEMP/cf-proxy.log" 2>&1 &
+          for _ in $(seq 1 20); do
+            if curl -fsS -o /dev/null http://127.0.0.1:9000/api/server/version; then exit 0; fi
+            sleep 1
+          done
+          echo "SonarQube not reachable through Cloudflare Access proxy"
+          cat "$RUNNER_TEMP/cf-proxy.log"
+          exit 1
       - name: SonarQube scan
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: http://127.0.0.1:9000
+        with:
+          # sonar-project.properties sets the public host; the command line wins
+          args: -Dsonar.host.url=http://127.0.0.1:9000
