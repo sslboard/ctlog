@@ -435,6 +435,43 @@ func TestBatchRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestPollDeviceLoginFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, message string
+		want                int
+	}{
+		{"expired", `{"error":"expired_token","error_description":"Expired."}`, "code expired", ExitAuth},
+		{"denied", `{"error":"access_denied","error_description":"Denied."}`, "login was denied", ExitAuth},
+		{"unknown error", `{"error":"invalid_grant","error_description":"Unknown device code"}`, "login failed: Unknown device code", ExitAuth},
+		{"no error code", `{}`, "HTTP 400", ExitUsage},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			var stderr bytes.Buffer
+			e := &env{stderr: &stderr, client: &api.Client{BaseURL: srv.URL}}
+			token, code := pollDeviceLogin(context.Background(), e, &api.DeviceCode{DeviceCode: "d", Interval: 1, ExpiresIn: 60})
+			if token != nil || code != tc.want || !strings.Contains(stderr.String(), tc.message) {
+				t.Fatalf("token=%+v code=%d stderr=%s", token, code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestPollDeviceLoginCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stderr bytes.Buffer
+	e := &env{stderr: &stderr}
+	token, code := pollDeviceLogin(ctx, e, &api.DeviceCode{Interval: 3600})
+	if token != nil || code != ExitAPI || !strings.Contains(stderr.String(), "interrupted") {
+		t.Fatalf("token=%+v code=%d stderr=%s", token, code, stderr.String())
+	}
+}
+
 func TestDeviceLogin(t *testing.T) {
 	h := newHarness(t, "free")
 	h.api.pendingPolls = 2

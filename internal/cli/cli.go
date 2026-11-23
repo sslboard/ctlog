@@ -155,17 +155,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 			return usageError(stderr, command+" takes no arguments")
 		}
 	}
-	if opts.exact && command != "certificates" {
-		return usageError(stderr, "--exact only applies to ctlog certificates")
-	}
-	if command != "login" && (opts.key != "" || opts.noBrowser) {
-		return usageError(stderr, "--key and --no-browser only apply to ctlog login")
-	}
-
-	switch opts.output {
-	case "text", "json", "crtsh":
-	default:
-		return usageError(stderr, fmt.Sprintf("unknown output format %q (want text, json or crtsh)", opts.output))
+	if err := validateCommandOptions(command, opts); err != nil {
+		return usageError(stderr, err.Error())
 	}
 
 	baseURL := strings.TrimSpace(getenv("CTLOG_API_URL"))
@@ -188,6 +179,25 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	return e.executeCommand(ctx, command, opts, positional)
+}
+
+func validateCommandOptions(command string, opts options) error {
+	if opts.exact && command != "certificates" {
+		return errors.New("--exact only applies to ctlog certificates")
+	}
+	if command != "login" && (opts.key != "" || opts.noBrowser) {
+		return errors.New("--key and --no-browser only apply to ctlog login")
+	}
+	switch opts.output {
+	case "text", "json", "crtsh":
+		return nil
+	default:
+		return fmt.Errorf("unknown output format %q (want text, json or crtsh)", opts.output)
+	}
+}
+
+func (e *env) executeCommand(ctx context.Context, command string, opts options, positional []string) int {
 	if command == "login" {
 		return runLogin(ctx, e, opts)
 	}
@@ -195,9 +205,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		return runLogout(e)
 	}
 
-	key, source, err := config.ResolveKey(getenv)
+	key, source, err := config.ResolveKey(e.getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "ctlog: reading saved login: %v\n", err)
+		fmt.Fprintf(e.stderr, "ctlog: reading saved login: %v\n", err)
 		return ExitUsage
 	}
 	e.client.APIKey = key
@@ -266,39 +276,7 @@ func (e *env) accountURL() string {
 func (e *env) reportError(err error) int {
 	var apiErr *api.Error
 	if errors.As(err, &apiErr) {
-		switch {
-		case apiErr.Status == http.StatusTooManyRequests:
-			retry := "Retry in about a minute."
-			if apiErr.RetryAfter > 0 {
-				retry = fmt.Sprintf("Retry in %ds.", int(apiErr.RetryAfter.Round(time.Second).Seconds()))
-			}
-			if e.client.APIKey != "" && apiErr.Message != "" {
-				fmt.Fprintf(e.stderr, "%s. %s\n", strings.TrimSuffix(apiErr.Message, "."), retry)
-			} else {
-				fmt.Fprintf(e.stderr, "Rate limited (1 search/minute without an account). %s\n", retry)
-			}
-			return ExitRateLimited
-		case apiErr.Status == http.StatusUnauthorized:
-			hint := "Run 'ctlog login' to sign in again."
-			if e.keySource == config.SourceEnv {
-				hint = "Check the key in " + config.EnvAPIKey + "."
-			}
-			fmt.Fprintf(e.stderr, "ctlog: API key rejected (revoked or invalid). %s\n", hint)
-			return ExitAuth
-		case apiErr.Status == http.StatusPaymentRequired:
-			fmt.Fprintf(e.stderr, "ctlog: %v\n", apiErr)
-			return ExitAuth
-		case apiErr.Status == http.StatusBadRequest || apiErr.Status == http.StatusUnprocessableEntity:
-			fmt.Fprintf(e.stderr, "ctlog: %v\n", apiErr)
-			return ExitUsage
-		default:
-			if apiErr.Message != "" {
-				fmt.Fprintf(e.stderr, "ctlog: API error (HTTP %d): %s\n", apiErr.Status, apiErr.Message)
-			} else {
-				fmt.Fprintf(e.stderr, "ctlog: API error (HTTP %d)\n", apiErr.Status)
-			}
-			return ExitAPI
-		}
+		return e.reportAPIError(apiErr)
 	}
 	if errors.Is(err, context.Canceled) {
 		fmt.Fprintln(e.stderr, "ctlog: interrupted")
@@ -306,6 +284,42 @@ func (e *env) reportError(err error) int {
 	}
 	fmt.Fprintf(e.stderr, "ctlog: %v\n", err)
 	return ExitAPI
+}
+
+func (e *env) reportAPIError(apiErr *api.Error) int {
+	switch {
+	case apiErr.Status == http.StatusTooManyRequests:
+		retry := "Retry in about a minute."
+		if apiErr.RetryAfter > 0 {
+			retry = fmt.Sprintf("Retry in %ds.", int(apiErr.RetryAfter.Round(time.Second).Seconds()))
+		}
+		if e.client.APIKey != "" && apiErr.Message != "" {
+			fmt.Fprintf(e.stderr, "%s. %s\n", strings.TrimSuffix(apiErr.Message, "."), retry)
+		} else {
+			fmt.Fprintf(e.stderr, "Rate limited (1 search/minute without an account). %s\n", retry)
+		}
+		return ExitRateLimited
+	case apiErr.Status == http.StatusUnauthorized:
+		hint := "Run 'ctlog login' to sign in again."
+		if e.keySource == config.SourceEnv {
+			hint = "Check the key in " + config.EnvAPIKey + "."
+		}
+		fmt.Fprintf(e.stderr, "ctlog: API key rejected (revoked or invalid). %s\n", hint)
+		return ExitAuth
+	case apiErr.Status == http.StatusPaymentRequired:
+		fmt.Fprintf(e.stderr, "ctlog: %v\n", apiErr)
+		return ExitAuth
+	case apiErr.Status == http.StatusBadRequest || apiErr.Status == http.StatusUnprocessableEntity:
+		fmt.Fprintf(e.stderr, "ctlog: %v\n", apiErr)
+		return ExitUsage
+	default:
+		if apiErr.Message != "" {
+			fmt.Fprintf(e.stderr, "ctlog: API error (HTTP %d): %s\n", apiErr.Status, apiErr.Message)
+		} else {
+			fmt.Fprintf(e.stderr, "ctlog: API error (HTTP %d)\n", apiErr.Status)
+		}
+		return ExitAPI
+	}
 }
 
 // formatCount renders 12432 as "12,432".

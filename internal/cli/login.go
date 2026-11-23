@@ -53,38 +53,23 @@ func runLogin(ctx context.Context, e *env, opts options) int {
 		return ExitUsage
 	}
 
-	var key, email string
-	var plan api.Plan
+	var token *api.DeviceToken
+	var code int
 	if opts.key != "" {
-		k, code := readKeyFlag(e, opts.key)
-		if code != ExitOK {
-			return code
-		}
-		e.client.APIKey = k
-		me, err := e.client.Me(ctx)
-		if err != nil {
-			var apiErr *api.Error
-			if errors.As(err, &apiErr) && apiErr.Status == 401 {
-				fmt.Fprintf(e.stderr, "ctlog: that key was rejected (revoked or invalid). Create one at %s\n", e.accountURL())
-				return ExitAuth
-			}
-			return e.reportError(err)
-		}
-		key, email, plan = k, me.Email, me.Plan
+		token, code = loginWithKey(ctx, e, opts.key)
 	} else {
-		token, code := deviceLogin(ctx, e, opts)
-		if code != ExitOK {
-			return code
-		}
-		key, email, plan = token.APIKey, token.Email, token.Plan
+		token, code = deviceLogin(ctx, e, opts)
+	}
+	if code != ExitOK {
+		return code
 	}
 
-	if err := config.Save(path, config.Config{APIKey: key, Email: email}); err != nil {
+	if err := config.Save(path, config.Config{APIKey: token.APIKey, Email: token.Email}); err != nil {
 		fmt.Fprintf(e.stderr, "ctlog: saving the key: %v\n", err)
 		return ExitAPI
 	}
-	fmt.Fprintf(e.stderr, "Signed in as %s. The key is saved in %s.\n", email, path)
-	if plan.Tier == "pro" {
+	fmt.Fprintf(e.stderr, "Signed in as %s. The key is saved in %s.\n", token.Email, path)
+	if token.Plan.Tier == "pro" {
 		fmt.Fprintln(e.stderr, "Hostname API plan active: use --all to get every hostname.")
 	} else {
 		fmt.Fprintf(e.stderr, "Free plan: 100 hostnames per search. Subscribe for full results at %s\n", e.accountURL())
@@ -93,6 +78,24 @@ func runLogin(ctx context.Context, e *env, opts options) int {
 		fmt.Fprintf(e.stderr, "Note: %s is set and takes precedence over the saved key.\n", config.EnvAPIKey)
 	}
 	return ExitOK
+}
+
+func loginWithKey(ctx context.Context, e *env, value string) (*api.DeviceToken, int) {
+	key, code := readKeyFlag(e, value)
+	if code != ExitOK {
+		return nil, code
+	}
+	e.client.APIKey = key
+	me, err := e.client.Me(ctx)
+	if err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) && apiErr.Status == 401 {
+			fmt.Fprintf(e.stderr, "ctlog: that key was rejected (revoked or invalid). Create one at %s\n", e.accountURL())
+			return nil, ExitAuth
+		}
+		return nil, e.reportError(err)
+	}
+	return &api.DeviceToken{APIKey: key, Email: me.Email, Plan: me.Plan}, ExitOK
 }
 
 func readKeyFlag(e *env, value string) (string, int) {
@@ -132,7 +135,10 @@ func deviceLogin(ctx context.Context, e *env, opts options) (*api.DeviceToken, i
 		}
 	}
 	fmt.Fprintln(e.stderr, "Waiting for approval...")
+	return pollDeviceLogin(ctx, e, code)
+}
 
+func pollDeviceLogin(ctx context.Context, e *env, code *api.DeviceCode) (*api.DeviceToken, int) {
 	interval := time.Duration(max(code.Interval, 1)) * pollUnit
 	deadline := time.Now().Add(time.Duration(max(code.ExpiresIn, 60)) * pollUnit)
 	networkErrors := 0

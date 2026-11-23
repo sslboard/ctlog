@@ -241,12 +241,7 @@ func runBatch(ctx context.Context, e *env, opts options, domains []string) int {
 		res, err := e.fetch(ctx, domain, opts, true)
 		if res != nil {
 			convertHostnames(res.Hostnames, opts.unicode)
-			for _, h := range res.Hostnames {
-				if !seen[h] {
-					seen[h] = true
-					merged = append(merged, h)
-				}
-			}
+			merged = appendUniqueHostnames(merged, res.Hostnames, seen)
 			summaries = append(summaries, batchDomain{
 				Domain:            domain,
 				Returned:          len(res.Hostnames),
@@ -275,6 +270,16 @@ func runBatch(ctx context.Context, e *env, opts options, domains []string) int {
 		return e.reportError(failure)
 	}
 	return ExitOK
+}
+
+func appendUniqueHostnames(merged, hostnames []string, seen map[string]bool) []string {
+	for _, h := range hostnames {
+		if !seen[h] {
+			seen[h] = true
+			merged = append(merged, h)
+		}
+	}
+	return merged
 }
 
 func writeBatch(w io.Writer, format string, summaries []batchDomain, hostnames []string) error {
