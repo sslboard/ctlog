@@ -17,6 +17,8 @@ import (
 // EnvAPIKey overrides the stored key, for CI and other non-interactive use.
 const EnvAPIKey = "SSLBOARD_API_KEY"
 
+const configFilename = "config.json"
+
 // Config is the on-disk file. Email is informational, for `ctlog status`
 // when the API is unreachable.
 type Config struct {
@@ -37,15 +39,15 @@ const (
 // never touch the real home directory.
 func Path(getenv func(string) string) (string, error) {
 	if dir := strings.TrimSpace(getenv("XDG_CONFIG_HOME")); dir != "" {
-		return filepath.Join(dir, "ctlog", "config.json"), nil
+		return filepath.Join(dir, "ctlog", configFilename), nil
 	}
 	if runtime.GOOS == "windows" {
 		if dir := strings.TrimSpace(getenv("APPDATA")); dir != "" {
-			return filepath.Join(dir, "ctlog", "config.json"), nil
+			return filepath.Join(dir, "ctlog", configFilename), nil
 		}
 	}
 	if home := strings.TrimSpace(getenv("HOME")); home != "" {
-		return filepath.Join(home, ".config", "ctlog", "config.json"), nil
+		return filepath.Join(home, ".config", "ctlog", configFilename), nil
 	}
 	return "", errors.New("cannot find a config directory (HOME is not set)")
 }

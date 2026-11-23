@@ -22,7 +22,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Test with coverage
-        run: go test -coverprofile=coverage.out ./...
+        run: go test -coverpkg=./... -coverprofile=coverage.out ./...
       # SonarQube sits behind Cloudflare Access. The scanner cannot send the
       # service token headers itself, so it talks to a local proxy that adds them.
       - name: Start Cloudflare Access proxy for SonarQube
